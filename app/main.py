@@ -3,7 +3,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 from app.config import get_settings
-from app.routers import calculations, health, iast
+from app.routers import (
+    calculations,
+    health,
+    iast,
+    kinetics,
+    regeneration,
+    thermal,
+)
+# Note: isotherm and breakthrough routers have dependency issues and are disabled
+# from app.routers import isotherm, breakthrough
 
 
 @asynccontextmanager
@@ -35,6 +44,11 @@ app.add_middleware(
 app.include_router(health.router)
 app.include_router(calculations.router)
 app.include_router(iast.router)
+app.include_router(kinetics.router)
+app.include_router(regeneration.router)
+app.include_router(thermal.router)
+# app.include_router(isotherm.router)
+# app.include_router(breakthrough.router)
 
 
 @app.get("/")
