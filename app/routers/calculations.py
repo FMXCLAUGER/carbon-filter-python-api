@@ -11,6 +11,7 @@ from app.services.wheeler_jonas import (
     calculate_pollutant_result,
     generate_breakthrough_curve,
 )
+from app.routers.iast import get_iast_for_pollutants
 
 router = APIRouter(tags=["calculations"])
 
@@ -130,14 +131,27 @@ async def calculate(request: CalculationRequest):
         cp_carbon = 1000  # J/(kg·K)
         max_temp_rise = (total_loading * delta_h_ads) / (dimensions.bed_mass * cp_carbon)
         thermal_warning = max_temp_rise > 50  # Warning if >50°C rise possible
-        
-        # 7. Generate warnings and recommendations
+
+        # 7. IAST calculation for multi-pollutant competitive adsorption
+        iast_results = None
+        if len(request.pollutants) >= 2:
+            iast_results = get_iast_for_pollutants(
+                request.pollutants,
+                temperature=request.temperature,
+            )
+            if iast_results:
+                warnings.append(
+                    f"Compétition multi-polluants détectée: capacités réduites de "
+                    f"{(1 - min(iast_results.reduction_factors)) * 100:.0f}% en moyenne"
+                )
+
+        # 8. Generate warnings and recommendations
         warnings, recommendations = analyze_results(
             operating, pollutant_results, request.design_life_months, request.safety_factor
         )
-        
+
         calculation_time_ms = (time.time() - start_time) * 1000
-        
+
         return CalculationResponse(
             dimensions=dimensions,
             operating=operating,
@@ -151,6 +165,7 @@ async def calculate(request: CalculationRequest):
             warnings=warnings,
             recommendations=recommendations,
             calculation_time_ms=round(calculation_time_ms, 2),
+            iast_results=iast_results,
         )
         
     except Exception as e:

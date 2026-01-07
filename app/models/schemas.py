@@ -84,3 +84,22 @@ class CalculationResponse(BaseModel):
     warnings: list[str] = []
     recommendations: list[str] = []
     calculation_time_ms: float
+    iast_results: Optional["IASTResponse"] = None
+
+
+class IASTRequest(BaseModel):
+    """Request for IAST multi-component calculation."""
+    pollutants: list[PollutantInput] = Field(..., min_length=2, description="At least 2 pollutants required")
+    temperature: float = Field(25.0, description="Temperature in °C")
+
+
+class IASTResponse(BaseModel):
+    """IAST calculation results."""
+    pollutants: list[str]
+    concentrations: list[float] = Field(..., description="Inlet concentrations in mg/m³")
+    molecular_weights: list[float]
+    iast_capacities_g_g: list[float] = Field(..., description="Competitive capacities in g/g")
+    pure_capacities_g_g: list[float] = Field(..., description="Pure component capacities in g/g")
+    reduction_factors: list[float] = Field(..., description="Capacity reduction due to competition")
+    selectivities: dict[str, Optional[float]] = Field(..., description="Selectivity ratios between pairs")
+    competitive_effect: bool = Field(True, description="Whether competitive adsorption was calculated")
