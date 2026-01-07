@@ -1,11 +1,16 @@
 import numpy as np
-from typing import Tuple, List
+from typing import Tuple, List, Optional
 
-from app.models.schemas import PollutantResult, BreakthroughPoint
+from app.models.schemas import PollutantResult, BreakthroughPoint, IsothermParams
 from app.services.corrections import humidity_correction, temperature_correction
+from app.services.pygaps_service import (
+    predict_capacity_pygaps,
+    is_pygaps_available,
+    get_default_isotherm_params,
+)
 
 
-# Typical adsorption capacities (g/g) for common pollutants at 25°C, 50% RH
+# Typical adsorption capacities (g/g) for common pollutants at 25°C, 50% RH (fallback)
 TYPICAL_CAPACITIES = {
     "toluene": 0.35,
     "benzene": 0.25,
@@ -42,12 +47,14 @@ def estimate_capacity(
     humidity: float,
     surface_area: float,
     molecular_weight: float | None = None,
+    isotherm_params: Optional[IsothermParams] = None,
 ) -> float:
     """
     Estimate adsorption capacity for a pollutant.
-    
-    Uses empirical correlations and corrections for T/RH.
-    
+
+    Uses pyGAPS isotherm models when available, otherwise falls back
+    to empirical correlations with T/RH corrections.
+
     Args:
         pollutant_name: Name of pollutant
         concentration: Inlet concentration (mg/m³)
@@ -55,29 +62,49 @@ def estimate_capacity(
         humidity: Relative humidity (%)
         surface_area: Carbon BET surface area (m²/g)
         molecular_weight: Molecular weight (g/mol)
-    
+        isotherm_params: Optional custom isotherm parameters
+
     Returns:
         Estimated capacity W_e (g/g)
     """
-    # Base capacity from lookup table
-    name_lower = pollutant_name.lower().replace(" ", "").replace("-", "")
-    base_capacity = TYPICAL_CAPACITIES.get(name_lower, TYPICAL_CAPACITIES["default"])
-    
-    # Adjust for surface area (reference: 1000 m²/g)
-    surface_factor = surface_area / 1000.0
-    
-    # Apply corrections
-    t_factor = temperature_correction(temperature, t_ref=25.0)
-    h_factor = humidity_correction(humidity)
-    
-    # Concentration effect (logarithmic - Freundlich-like)
-    # Higher concentration = slightly higher capacity
-    c_factor = 1.0 + 0.1 * np.log10(max(concentration, 1) / 100)
-    c_factor = np.clip(c_factor, 0.8, 1.3)
-    
-    capacity = base_capacity * surface_factor * t_factor * h_factor * c_factor
-    
-    return max(capacity, 0.01)  # Minimum 1% capacity
+    capacity = None
+
+    if is_pygaps_available():
+        params_dict = None
+        if isotherm_params is not None:
+            params_dict = {
+                "model": isotherm_params.model,
+                "params": isotherm_params.params,
+                "temp_ref": isotherm_params.temp_ref,
+            }
+
+        capacity = predict_capacity_pygaps(
+            pollutant_name=pollutant_name,
+            concentration_mg_m3=concentration,
+            temperature_c=temperature,
+            molecular_weight=molecular_weight,
+            isotherm_params=params_dict,
+        )
+
+        if capacity is not None:
+            surface_factor = surface_area / 1000.0
+            h_factor = humidity_correction(humidity)
+            capacity = capacity * surface_factor * h_factor
+
+    if capacity is None:
+        name_lower = pollutant_name.lower().replace(" ", "").replace("-", "")
+        base_capacity = TYPICAL_CAPACITIES.get(name_lower, TYPICAL_CAPACITIES["default"])
+
+        surface_factor = surface_area / 1000.0
+        t_factor = temperature_correction(temperature, t_ref=25.0)
+        h_factor = humidity_correction(humidity)
+
+        c_factor = 1.0 + 0.1 * np.log10(max(concentration, 1) / 100)
+        c_factor = np.clip(c_factor, 0.8, 1.3)
+
+        capacity = base_capacity * surface_factor * t_factor * h_factor * c_factor
+
+    return max(capacity, 0.01)
 
 
 def estimate_kv(
@@ -218,14 +245,14 @@ def calculate_pollutant_result(
     bed_height: float,
     particle_diameter: float | None,
     molecular_weight: float | None,
+    isotherm_params: Optional[IsothermParams] = None,
 ) -> PollutantResult:
     """
     Calculate complete results for a single pollutant.
     """
-    # Estimate capacity
     W_e = estimate_capacity(
         pollutant_name, concentration, temperature, humidity,
-        surface_area, molecular_weight
+        surface_area, molecular_weight, isotherm_params
     )
     
     # Estimate k_v

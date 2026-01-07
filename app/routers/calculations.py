@@ -99,6 +99,7 @@ async def calculate(request: CalculationRequest):
                 bed_height=dimensions.bed_height,
                 particle_diameter=request.carbon.particle_diameter,
                 molecular_weight=pollutant.molecular_weight,
+                isotherm_params=pollutant.isotherm_params,
             )
             pollutant_results.append(result)
         

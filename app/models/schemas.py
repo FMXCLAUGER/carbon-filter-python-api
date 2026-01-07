@@ -2,12 +2,20 @@ from pydantic import BaseModel, Field
 from typing import Optional
 
 
+class IsothermParams(BaseModel):
+    """Isotherm model parameters for pyGAPS calculations."""
+    model: str = Field(..., description="Isotherm model name (Langmuir, Toth, Freundlich, DR, DA)")
+    params: dict = Field(..., description="Model parameters (e.g., {'n_m': 4.8, 'K': 0.75, 't': 0.48})")
+    temp_ref: float = Field(298.15, description="Reference temperature in K")
+
+
 class PollutantInput(BaseModel):
     name: str
     cas_number: Optional[str] = None
     concentration: float = Field(..., gt=0, description="Concentration in mg/m³")
     molecular_weight: Optional[float] = Field(None, gt=0, description="Molecular weight in g/mol")
     target_outlet: Optional[float] = Field(None, ge=0, description="Target outlet concentration (VLE) in mg/m³")
+    isotherm_params: Optional[IsothermParams] = Field(None, description="Custom isotherm parameters for pyGAPS")
 
 
 class CarbonInput(BaseModel):
