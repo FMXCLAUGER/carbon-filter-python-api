@@ -12,6 +12,7 @@ from app.routers import (
     thermal,
     isotherm,
     breakthrough,
+    cadet,
 )
 
 
@@ -49,6 +50,7 @@ app.include_router(regeneration.router)
 app.include_router(thermal.router)
 app.include_router(isotherm.router)
 app.include_router(breakthrough.router)
+app.include_router(cadet.router)
 
 
 @app.get("/")
