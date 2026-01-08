@@ -10,9 +10,9 @@ from app.routers import (
     kinetics,
     regeneration,
     thermal,
+    isotherm,
+    breakthrough,
 )
-# Note: isotherm and breakthrough routers have dependency issues and are disabled
-# from app.routers import isotherm, breakthrough
 
 
 @asynccontextmanager
@@ -47,8 +47,8 @@ app.include_router(iast.router)
 app.include_router(kinetics.router)
 app.include_router(regeneration.router)
 app.include_router(thermal.router)
-# app.include_router(isotherm.router)
-# app.include_router(breakthrough.router)
+app.include_router(isotherm.router)
+app.include_router(breakthrough.router)
 
 
 @app.get("/")

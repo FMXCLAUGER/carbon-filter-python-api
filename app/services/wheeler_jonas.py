@@ -1,5 +1,6 @@
 import numpy as np
 from typing import Tuple, List, Optional
+from dataclasses import dataclass
 
 from app.models.schemas import PollutantResult, BreakthroughPoint, IsothermParams
 from app.services.corrections import humidity_correction, temperature_correction
@@ -8,6 +9,177 @@ from app.services.pygaps_service import (
     is_pygaps_available,
     get_default_isotherm_params,
 )
+
+
+@dataclass
+class WheelerJonasParams:
+    """Parameters for Wheeler-Jonas breakthrough calculation."""
+    W_e: float  # Equilibrium adsorption capacity (g/g)
+    k_v: float  # Mass transfer coefficient (1/min)
+    rho_b: float  # Bulk density (kg/m³)
+    Q: float  # Flow rate (m³/min)
+    C_in: float  # Inlet concentration (mg/m³)
+    C_out: float  # Breakthrough concentration (mg/m³)
+    W_bed: float  # Bed mass (kg)
+
+
+def wheeler_jonas_breakthrough_time(params: WheelerJonasParams) -> float:
+    """
+    Calculate breakthrough time using Wheeler-Jonas equation.
+
+    t_b = (W_e × W) / (C_in × Q) - (W_e × ρ_b) / (k_v × C_in) × ln((C_in - C_out) / C_out)
+
+    Args:
+        params: WheelerJonasParams dataclass
+
+    Returns:
+        Breakthrough time in minutes
+    """
+    W_g = params.W_bed * 1000  # kg to g
+    C_in_g = params.C_in / 1000  # mg/m³ to g/m³
+    C_out_g = params.C_out / 1000  # mg/m³ to g/m³
+
+    # Capacity term
+    term1 = (params.W_e * W_g) / (C_in_g * params.Q)
+
+    # Kinetic term
+    if C_in_g > C_out_g and C_out_g > 0:
+        ln_term = np.log((C_in_g - C_out_g) / C_out_g)
+    else:
+        ln_term = 0
+
+    term2 = (params.W_e * params.rho_b) / (params.k_v * C_in_g) * ln_term
+
+    return max(term1 - term2, 0)
+
+
+def estimate_kv_from_velocity(
+    velocity: float,
+    particle_diameter: float,
+    voidage: float = 0.4,
+) -> float:
+    """
+    Estimate mass transfer coefficient k_v from operating conditions.
+
+    Uses simplified correlation based on LDF model.
+
+    Args:
+        velocity: Superficial velocity (m/s)
+        particle_diameter: Particle diameter (m)
+        voidage: Bed voidage
+
+    Returns:
+        k_v (1/min)
+    """
+    # Base k_v for typical conditions
+    base_kv = 5.0  # 1/min
+
+    # Velocity correction
+    v_factor = (velocity / 0.3) ** 0.5
+
+    # Particle size correction (smaller = faster mass transfer)
+    dp_factor = (0.003 / particle_diameter) ** 0.3
+
+    # Voidage correction
+    eps_factor = ((1 - voidage) / 0.6) ** 0.2
+
+    return base_kv * v_factor * dp_factor * eps_factor
+
+
+def calculate_mass_transfer_zone(
+    params: WheelerJonasParams,
+    bed_height: float,
+) -> float:
+    """
+    Calculate mass transfer zone (MTZ) length.
+
+    MTZ represents the zone where concentration changes from C_in to C_out.
+
+    Args:
+        params: WheelerJonasParams
+        bed_height: Bed height (m)
+
+    Returns:
+        MTZ length (m)
+    """
+    # Calculate stoichiometric time (time to fully saturate the bed)
+    W_g = params.W_bed * 1000
+    C_in_g = params.C_in / 1000
+    t_stoich = (params.W_e * W_g) / (C_in_g * params.Q)
+
+    # Calculate breakthrough time
+    t_b = wheeler_jonas_breakthrough_time(params)
+
+    # MTZ = H × (1 - t_b / t_stoich)
+    if t_stoich > 0:
+        mtz = bed_height * (1 - t_b / t_stoich)
+    else:
+        mtz = 0.1 * bed_height
+
+    return np.clip(mtz, 0.01, bed_height * 0.9)
+
+
+def calculate_bed_utilization(
+    params: WheelerJonasParams,
+    bed_height: float,
+) -> float:
+    """
+    Calculate bed utilization at breakthrough.
+
+    Utilization = (H - MTZ/2) / H
+
+    Args:
+        params: WheelerJonasParams
+        bed_height: Bed height (m)
+
+    Returns:
+        Bed utilization (0-1)
+    """
+    mtz = calculate_mass_transfer_zone(params, bed_height)
+    utilization = (bed_height - mtz / 2) / bed_height
+    return np.clip(utilization, 0.1, 1.0)
+
+
+def generate_breakthrough_curve_wj(
+    params: WheelerJonasParams,
+    n_points: int = 50,
+) -> List[Tuple[float, float]]:
+    """
+    Generate breakthrough curve using Wheeler-Jonas model.
+
+    Args:
+        params: WheelerJonasParams
+        n_points: Number of points in the curve
+
+    Returns:
+        List of (time_min, c_c0) tuples
+    """
+    # Get breakthrough and saturation times
+    t_b = wheeler_jonas_breakthrough_time(params)
+
+    # Calculate saturation time (95% breakthrough)
+    params_sat = WheelerJonasParams(
+        W_e=params.W_e,
+        k_v=params.k_v,
+        rho_b=params.rho_b,
+        Q=params.Q,
+        C_in=params.C_in,
+        C_out=0.95 * params.C_in,
+        W_bed=params.W_bed,
+    )
+    t_sat = wheeler_jonas_breakthrough_time(params_sat)
+
+    # Generate time points
+    t_max = t_sat * 1.2  # Extend beyond saturation
+    times = np.linspace(0, t_max, n_points)
+
+    # Use logistic function for S-curve
+    t_mid = (t_b + t_sat) / 2
+    k = 10 / (t_sat - t_b) if t_sat > t_b else 1.0
+
+    c_c0_values = 1 / (1 + np.exp(-k * (times - t_mid)))
+
+    return [(float(t), float(c)) for t, c in zip(times, c_c0_values)]
 
 
 # Typical adsorption capacities (g/g) for common pollutants at 25°C, 50% RH (fallback)

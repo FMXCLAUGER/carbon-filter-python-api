@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 from app.services.wheeler_jonas import (
     WheelerJonasParams,
     wheeler_jonas_breakthrough_time,
-    generate_breakthrough_curve,
+    generate_breakthrough_curve_wj,
     estimate_kv_from_velocity,
     calculate_mass_transfer_zone,
     calculate_bed_utilization,
@@ -110,7 +110,7 @@ async def calculate_breakthrough(request: BreakthroughRequest) -> BreakthroughRe
         utilization = calculate_bed_utilization(params, request.bed_height)
 
         # Generate curve
-        curve_data = generate_breakthrough_curve(params, n_points=request.n_points)
+        curve_data = generate_breakthrough_curve_wj(params, n_points=request.n_points)
         curve = [{"time_hours": t / 60, "c_c0": c} for t, c in curve_data]
 
         return BreakthroughResult(
