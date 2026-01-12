@@ -199,7 +199,10 @@ class KineticsCompareRequest(BaseModel):
     bed_area: float = Field(..., gt=0, description="Cross-sectional area in m²")
     C0: float = Field(..., gt=0, description="Inlet concentration in mg/m³")
     q0: float = Field(..., gt=0, description="Maximum adsorption capacity in kg/kg")
+    W_e: Optional[float] = Field(None, gt=0, description="Equilibrium capacity for Wheeler-Jonas in g/g (defaults to q0)")
     rho_bulk: float = Field(480, gt=0, description="Bulk density in kg/m³")
+    velocity: float = Field(0.3, gt=0, description="Superficial velocity in m/s")
+    particle_diameter: Optional[float] = Field(None, description="Particle diameter in mm")
     pollutant_type: str = Field("VOC", description="Pollutant type")
     n_points: int = Field(100, ge=10, le=500, description="Number of points")
 
@@ -222,8 +225,24 @@ class KineticsResult(BaseModel):
     service_time_h: float = Field(..., description="Service time at 10% breakthrough in hours")
 
 
+class WheelerJonasKineticsRequest(BaseModel):
+    """Request for Wheeler-Jonas breakthrough model calculation."""
+    flow_rate: float = Field(..., gt=0, description="Volumetric flow rate in m³/h")
+    bed_mass: float = Field(..., gt=0, description="Carbon bed mass in kg")
+    bed_height: float = Field(..., gt=0, description="Bed height in m")
+    C0: float = Field(..., gt=0, description="Inlet concentration in mg/m³")
+    C_out: float = Field(None, description="Breakthrough concentration in mg/m³ (default 5% of C0)")
+    W_e: float = Field(..., gt=0, description="Equilibrium capacity in g/g")
+    k_v: Optional[float] = Field(None, description="Mass transfer coefficient in 1/min")
+    rho_bulk: float = Field(480, gt=0, description="Bulk density in kg/m³")
+    velocity: float = Field(0.3, gt=0, description="Superficial velocity in m/s")
+    particle_diameter: Optional[float] = Field(None, description="Particle diameter in mm")
+    n_points: int = Field(100, ge=10, le=500, description="Number of points in breakthrough curve")
+
+
 class KineticsCompareResult(BaseModel):
     """Comparison of all kinetic models."""
+    wheeler_jonas: Optional[KineticsResult] = Field(None, description="Wheeler-Jonas model result")
     thomas: KineticsResult
     yoon_nelson: KineticsResult
     bohart_adams: KineticsResult
@@ -275,6 +294,44 @@ class SteamRegenRequest(BaseModel):
     steam_ratio: float = Field(3.0, gt=0, description="kg steam / kg adsorbate")
     regen_time_h: float = Field(2.0, gt=0, description="Regeneration time in hours")
     condensate_recovery: float = Field(0.8, gt=0, le=1, description="Condensate recovery efficiency")
+
+
+class VSAEnergyRequest(BaseModel):
+    """Request for VSA (Vacuum Swing Adsorption) regeneration energy calculation."""
+    bed_mass: float = Field(..., gt=0, description="Carbon bed mass in kg")
+    q_loading: float = Field(..., gt=0, description="Adsorbate loading in kg/kg")
+    P_ads: float = Field(101325, gt=0, description="Adsorption pressure in Pa")
+    P_vacuum: float = Field(20000, gt=0, lt=101325, description="Vacuum pressure in Pa")
+    bed_void_fraction: float = Field(0.4, gt=0, lt=1, description="Bed void fraction")
+    vacuum_pump_efficiency: float = Field(0.65, gt=0, le=1, description="Vacuum pump efficiency")
+    cycle_time_min: float = Field(15, gt=0, description="Cycle time in minutes")
+
+
+class RegenCompareRequest(BaseModel):
+    """Request for comparing all regeneration methods."""
+    bed_mass: float = Field(..., gt=0, description="Carbon bed mass in kg")
+    q_loading: float = Field(..., gt=0, description="Adsorbate loading in kg/kg")
+    delta_H_ads: float = Field(40000, description="Heat of adsorption in J/mol")
+    molecular_weight: float = Field(92, gt=0, description="Molecular weight in g/mol")
+
+
+class RegenMethodResult(BaseModel):
+    """Result for a single regeneration method in comparison."""
+    energy_kWh: float
+    specific_energy_kWh_kg: float
+    power_kW: float
+    time_h: float
+    advantages: list[str]
+    disadvantages: list[str]
+
+
+class RegenCompareResult(BaseModel):
+    """Comparison of all regeneration methods."""
+    TSA: RegenMethodResult
+    PSA: RegenMethodResult
+    VSA: RegenMethodResult
+    STEAM: RegenMethodResult
+    recommendation: dict
 
 
 class RegenerationEnergyResult(BaseModel):

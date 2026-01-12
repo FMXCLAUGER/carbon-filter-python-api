@@ -13,7 +13,11 @@ from fastapi import APIRouter, HTTPException
 from app.models.schemas import (
     TSAEnergyRequest,
     PSAEnergyRequest,
+    VSAEnergyRequest,
     SteamRegenRequest,
+    RegenCompareRequest,
+    RegenCompareResult,
+    RegenMethodResult,
     RegenerationEnergyResult,
     EconomicsCompareRequest,
     EconomicsCompareResult,
@@ -27,7 +31,9 @@ from app.models.schemas import (
 from app.services.regeneration import (
     calculate_tsa_energy,
     calculate_psa_energy,
+    calculate_vsa_energy,
     calculate_steam_regeneration,
+    compare_regeneration_methods,
     RegenerationType,
     compare_regeneration_vs_replacement,
     calculate_co2_savings,
@@ -151,6 +157,99 @@ async def calculate_steam(request: SteamRegenRequest) -> RegenerationEnergyResul
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Steam calculation error: {str(e)}")
+
+
+@router.post("/vsa/energy", response_model=RegenerationEnergyResult)
+async def calculate_vsa(request: VSAEnergyRequest) -> RegenerationEnergyResult:
+    """
+    Calculate energy requirements for VSA (Vacuum Swing Adsorption) regeneration.
+
+    VSA uses vacuum to reduce pressure for desorption. Lower energy than PSA
+    and operates at ambient temperature.
+    """
+    try:
+        energy = calculate_vsa_energy(
+            bed_mass=request.bed_mass,
+            q_loading=request.q_loading,
+            P_ads=request.P_ads / 1e5,  # Pa to bar
+            P_vacuum=request.P_vacuum / 1e5,  # Pa to bar
+            bed_void_fraction=request.bed_void_fraction,
+            vacuum_pump_efficiency=request.vacuum_pump_efficiency,
+            cycle_time_min=request.cycle_time_min,
+        )
+
+        return RegenerationEnergyResult(
+            regen_type="VSA",
+            Q_sensible_kWh=0,
+            Q_desorption_kWh=0,
+            Q_total_kWh=round(energy.total_energy_kWh, 2),
+            power_kW=round(energy.power_required_kW, 2),
+            energy_per_kg_adsorbate=round(energy.specific_energy_kWh_kg * request.bed_mass / (request.bed_mass * request.q_loading) if request.q_loading > 0 else 0, 2),
+            efficiency=energy.efficiency,
+            regen_time_h=energy.regeneration_time_h,
+            notes=[
+                f"Pressure ratio: {energy.details.get('pressure_ratio', 'N/A'):.1f}",
+                f"Cycles per hour: {energy.details.get('cycles_per_hour', 'N/A'):.1f}",
+                f"Volume evacuated: {energy.details.get('volume_evacuated_m3', 0):.3f} m³",
+            ],
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"VSA calculation error: {str(e)}")
+
+
+@router.post("/compare-all", response_model=RegenCompareResult)
+async def compare_all_methods(request: RegenCompareRequest) -> RegenCompareResult:
+    """
+    Compare all four regeneration methods (TSA, PSA, VSA, Steam) for a given application.
+
+    Returns energy requirements, advantages/disadvantages, and a recommendation
+    based on adsorbate loading and properties.
+    """
+    try:
+        result = compare_regeneration_methods(
+            bed_mass=request.bed_mass,
+            q_loading=request.q_loading,
+            delta_H_ads=request.delta_H_ads,
+            molecular_weight=request.molecular_weight,
+        )
+
+        return RegenCompareResult(
+            TSA=RegenMethodResult(
+                energy_kWh=result["TSA"]["energy_kWh"],
+                specific_energy_kWh_kg=result["TSA"]["specific_energy_kWh_kg"],
+                power_kW=result["TSA"]["power_kW"],
+                time_h=result["TSA"]["time_h"],
+                advantages=result["TSA"]["advantages"],
+                disadvantages=result["TSA"]["disadvantages"],
+            ),
+            PSA=RegenMethodResult(
+                energy_kWh=result["PSA"]["energy_kWh"],
+                specific_energy_kWh_kg=result["PSA"]["specific_energy_kWh_kg"],
+                power_kW=result["PSA"]["power_kW"],
+                time_h=result["PSA"]["time_h"],
+                advantages=result["PSA"]["advantages"],
+                disadvantages=result["PSA"]["disadvantages"],
+            ),
+            VSA=RegenMethodResult(
+                energy_kWh=result["VSA"]["energy_kWh"],
+                specific_energy_kWh_kg=result["VSA"]["specific_energy_kWh_kg"],
+                power_kW=result["VSA"]["power_kW"],
+                time_h=result["VSA"]["time_h"],
+                advantages=result["VSA"]["advantages"],
+                disadvantages=result["VSA"]["disadvantages"],
+            ),
+            STEAM=RegenMethodResult(
+                energy_kWh=result["STEAM"]["energy_kWh"],
+                specific_energy_kWh_kg=result["STEAM"]["specific_energy_kWh_kg"],
+                power_kW=result["STEAM"]["power_kW"],
+                time_h=result["STEAM"]["time_h"],
+                advantages=result["STEAM"]["advantages"],
+                disadvantages=result["STEAM"]["disadvantages"],
+            ),
+            recommendation=result["recommendation"],
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Comparison error: {str(e)}")
 
 
 @router.post("/economics/compare", response_model=EconomicsCompareResult)

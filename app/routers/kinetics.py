@@ -2,6 +2,7 @@
 Kinetics Router - API endpoints for breakthrough curve kinetic models
 
 Provides endpoints for:
+- Wheeler-Jonas model calculation
 - Thomas model calculation
 - Yoon-Nelson model calculation
 - Bohart-Adams model calculation
@@ -13,6 +14,7 @@ from app.models.schemas import (
     ThomasRequest,
     YoonNelsonRequest,
     BohartAdamsRequest,
+    WheelerJonasKineticsRequest,
     KineticsCompareRequest,
     KineticsResult,
     KineticsCompareResult,
@@ -24,8 +26,93 @@ from app.services.kinetics import (
     calculate_yoon_nelson_breakthrough,
     calculate_bohart_adams_breakthrough,
 )
+from app.services.wheeler_jonas import (
+    WheelerJonasParams,
+    wheeler_jonas_breakthrough_time,
+    generate_breakthrough_curve_wj,
+    calculate_mass_transfer_zone,
+    estimate_kv_from_velocity,
+)
 
 router = APIRouter(prefix="/api/kinetics", tags=["kinetics"])
+
+
+def _calculate_wheeler_jonas(
+    flow_rate: float,
+    bed_mass: float,
+    bed_height: float,
+    C0: float,
+    C_out: float | None,
+    W_e: float,
+    k_v: float | None,
+    rho_bulk: float,
+    velocity: float,
+    particle_diameter: float | None,
+    n_points: int,
+) -> dict:
+    """Calculate Wheeler-Jonas breakthrough and return standardized result."""
+    # Default breakthrough concentration (5% of inlet)
+    if C_out is None or C_out <= 0:
+        C_out = C0 * 0.05
+
+    # Estimate k_v if not provided
+    if k_v is None:
+        dp = particle_diameter / 1000 if particle_diameter else 0.003  # mm to m
+        k_v = estimate_kv_from_velocity(velocity, dp, voidage=0.4)
+
+    Q_m3_min = flow_rate / 60  # m³/h to m³/min
+
+    params = WheelerJonasParams(
+        W_e=W_e,
+        k_v=k_v,
+        rho_b=rho_bulk,
+        Q=Q_m3_min,
+        C_in=C0,
+        C_out=C_out,
+        W_bed=bed_mass,
+    )
+
+    # Calculate breakthrough time
+    t_b_min = wheeler_jonas_breakthrough_time(params)
+    t_b_h = t_b_min / 60
+
+    # Calculate MTZ
+    mtz = calculate_mass_transfer_zone(params, bed_height)
+
+    # Generate breakthrough curve
+    curve_data = generate_breakthrough_curve_wj(params, n_points)
+
+    # Calculate breakthrough times at different C/C0 levels
+    def find_time_for_cc0(target_cc0: float) -> float:
+        params_t = WheelerJonasParams(
+            W_e=W_e, k_v=k_v, rho_b=rho_bulk, Q=Q_m3_min,
+            C_in=C0, C_out=C0 * target_cc0, W_bed=bed_mass,
+        )
+        return wheeler_jonas_breakthrough_time(params_t) / 60  # hours
+
+    t_5 = find_time_for_cc0(0.05)
+    t_10 = find_time_for_cc0(0.10)
+    t_50 = find_time_for_cc0(0.50)
+    t_90 = find_time_for_cc0(0.90)
+
+    return {
+        "parameters": {
+            "W_e": W_e,
+            "k_v": k_v,
+            "rho_bulk": rho_bulk,
+            "C0": C0,
+            "C_out": C_out,
+            "bed_mass": bed_mass,
+        },
+        "breakthrough_times": {
+            "t_5_h": t_5,
+            "t_10_h": t_10,
+            "t_50_h": t_50,
+            "t_90_h": t_90,
+            "MTZ_h": mtz,
+        },
+        "curve": [{"time_h": t / 60, "C_C0": c} for t, c in curve_data],
+    }
 
 
 def _convert_to_kinetics_result(result: dict, model_name: str) -> KineticsResult:
@@ -50,6 +137,33 @@ def _convert_to_kinetics_result(result: dict, model_name: str) -> KineticsResult
         curve=[{"time_h": p["time_h"], "C_C0": p["C_C0"]} for p in result["curve"]],
         service_time_h=bt["t_10_h"],
     )
+
+
+@router.post("/wheeler-jonas/calculate", response_model=KineticsResult)
+async def calculate_wheeler_jonas(request: WheelerJonasKineticsRequest) -> KineticsResult:
+    """
+    Calculate breakthrough curve using Wheeler-Jonas model.
+
+    The Wheeler-Jonas model is the industry standard for activated carbon filter design.
+    Best for: VOC adsorption, industrial air treatment, regulatory compliance.
+    """
+    try:
+        result = _calculate_wheeler_jonas(
+            flow_rate=request.flow_rate,
+            bed_mass=request.bed_mass,
+            bed_height=request.bed_height,
+            C0=request.C0,
+            C_out=request.C_out,
+            W_e=request.W_e,
+            k_v=request.k_v,
+            rho_bulk=request.rho_bulk,
+            velocity=request.velocity,
+            particle_diameter=request.particle_diameter,
+            n_points=request.n_points,
+        )
+        return _convert_to_kinetics_result(result, "Wheeler-Jonas")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Wheeler-Jonas calculation error: {str(e)}")
 
 
 @router.post("/thomas/calculate", response_model=KineticsResult)
@@ -129,12 +243,28 @@ async def calculate_bohart_adams(request: BohartAdamsRequest) -> KineticsResult:
 @router.post("/compare", response_model=KineticsCompareResult)
 async def compare_models(request: KineticsCompareRequest) -> KineticsCompareResult:
     """
-    Compare all three kinetic models with the same input parameters.
+    Compare all four kinetic models with the same input parameters.
 
-    Returns breakthrough curves from Thomas, Yoon-Nelson, and Bohart-Adams models
+    Returns breakthrough curves from Wheeler-Jonas, Thomas, Yoon-Nelson, and Bohart-Adams models
     along with a recommendation for which model to use.
     """
     try:
+        # Calculate Wheeler-Jonas (industry standard)
+        W_e = request.W_e if request.W_e is not None else request.q0
+        wheeler_jonas_result = _calculate_wheeler_jonas(
+            flow_rate=request.flow_rate,
+            bed_mass=request.bed_mass,
+            bed_height=request.bed_height,
+            C0=request.C0,
+            C_out=None,  # Default 5% breakthrough
+            W_e=W_e,
+            k_v=None,  # Auto-estimate
+            rho_bulk=request.rho_bulk,
+            velocity=request.velocity,
+            particle_diameter=request.particle_diameter,
+            n_points=request.n_points,
+        )
+
         # Calculate Thomas
         thomas_result = calculate_thomas_breakthrough(
             flow_rate=request.flow_rate,
@@ -167,18 +297,22 @@ async def compare_models(request: KineticsCompareRequest) -> KineticsCompareResu
         )
 
         # Determine recommended model based on conditions
-        recommended_model = "Thomas"
-        recommendation_reason = "Thomas model is generally most accurate for VOC adsorption on activated carbon."
+        recommended_model = "Wheeler-Jonas"
+        recommendation_reason = "Wheeler-Jonas is the industry standard for activated carbon filter design and regulatory compliance."
 
-        # Simple heuristics for recommendation
+        # Heuristics for recommendation
         if request.C0 < 50:  # Low concentration
             recommended_model = "Bohart-Adams"
-            recommendation_reason = "Bohart-Adams is recommended for low concentration applications (< 50 mg/m³)."
+            recommendation_reason = "Bohart-Adams is recommended for low concentration applications (< 50 mg/m³), especially for initial breakthrough prediction."
+        elif request.C0 > 500:  # High concentration
+            recommended_model = "Wheeler-Jonas"
+            recommendation_reason = "Wheeler-Jonas is most reliable for high concentration VOC applications (> 500 mg/m³) in industrial air treatment."
         elif request.bed_height > 0.5 and request.q0 < 0.1:  # Deep bed, low capacity
             recommended_model = "Yoon-Nelson"
             recommendation_reason = "Yoon-Nelson provides good approximation for deep beds with moderate adsorption capacity."
 
         return KineticsCompareResult(
+            wheeler_jonas=_convert_to_kinetics_result(wheeler_jonas_result, "Wheeler-Jonas"),
             thomas=_convert_to_kinetics_result(thomas_result, "Thomas"),
             yoon_nelson=_convert_to_kinetics_result(yoon_nelson_result, "Yoon-Nelson"),
             bohart_adams=_convert_to_kinetics_result(bohart_adams_result, "Bohart-Adams"),
@@ -195,6 +329,13 @@ async def list_models() -> list[KineticModel]:
     List all available kinetic models with descriptions.
     """
     return [
+        KineticModel(
+            name="Wheeler-Jonas",
+            description="Industry standard for activated carbon filter design. Based on mass transfer zone theory with equilibrium capacity.",
+            equation="t_b = (W_e × W) / (C_in × Q) - (W_e × ρ_b) / (k_v × C_in) × ln((C_in - C_b) / C_b)",
+            parameters=["W_e (equilibrium capacity)", "k_v (mass transfer coeff.)", "ρ_b (bulk density)", "W (bed mass)", "Q (flow rate)"],
+            best_for="VOC adsorption, industrial air treatment, regulatory compliance (ICPE, TA-Luft)",
+        ),
         KineticModel(
             name="Thomas",
             description="Most widely used model for fixed-bed adsorption. Assumes Langmuir isotherm and second-order reversible kinetics.",
